@@ -19,6 +19,17 @@ The file is then in `build/bin/services-execution`
 To execute:
 `./build/bin/services-execution config.json`
 
+# Using Nix
+
+This project also provides a `flake.nix`. You can build it with: `nix build`
+
+The file is then in `result/bin/execution`
+
+Or enter a dev shell with Go available: `nix develop`
+
+You can also run it directly without cloning the repository:
+`nix run github:foilen/services-execution -- config.json`
+
 # Create release
 
 `./create-public-release.sh`
