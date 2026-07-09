@@ -78,6 +78,10 @@ func main() {
 		// NoSetGroups avoids the setgroups() syscall, which requires CAP_SETGID
 		// unconditionally on Linux even when Uid/Gid match the calling process.
 		cmd.SysProcAttr.Credential = &syscall.Credential{Uid: uid, Gid: gid, NoSetGroups: true}
+		// Run in its own process group so shutdown signals can be sent to the whole
+		// group (shell + its children) instead of just the "sh -c" shell, which does
+		// not forward signals to the actual service process it execs.
+		cmd.SysProcAttr.Setpgid = true
 		err := cmd.Start()
 		if err != nil {
 			fmt.Println(i, "Problem to start", err)
@@ -144,7 +148,9 @@ func shutdownAll() {
 			default:
 			}
 			fmt.Println(mp.name, "Sending SIGTERM")
-			_ = mp.cmd.Process.Signal(syscall.SIGTERM)
+			// Signal the whole process group (negative PID) so it reaches the
+			// service process even when it's a child of the "sh -c" shell.
+			_ = syscall.Kill(-mp.cmd.Process.Pid, syscall.SIGTERM)
 		}
 
 		var wg sync.WaitGroup
@@ -156,7 +162,7 @@ func shutdownAll() {
 				case <-mp.done:
 				case <-time.After(gracePeriod):
 					fmt.Println(mp.name, "Did not stop in time; sending SIGKILL")
-					_ = mp.cmd.Process.Kill()
+					_ = syscall.Kill(-mp.cmd.Process.Pid, syscall.SIGKILL)
 				}
 			}(mp)
 		}
