@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -78,9 +80,11 @@ func main() {
 		// NoSetGroups avoids the setgroups() syscall, which requires CAP_SETGID
 		// unconditionally on Linux even when Uid/Gid match the calling process.
 		cmd.SysProcAttr.Credential = &syscall.Credential{Uid: uid, Gid: gid, NoSetGroups: true}
-		// Run in its own process group so shutdown signals can be sent to the whole
-		// group (shell + its children) instead of just the "sh -c" shell, which does
-		// not forward signals to the actual service process it execs.
+		// Run in its own process group so it doesn't receive signals (e.g. SIGINT
+		// from an interactive terminal) meant for the supervisor's group. Shutdown
+		// signals are delivered individually to the whole descendant tree (see
+		// killTree) since children can set up their own session/process group
+		// (e.g. php-fpm calling setsid()) and stop being reachable via pgid.
 		cmd.SysProcAttr.Setpgid = true
 		err := cmd.Start()
 		if err != nil {
@@ -148,9 +152,7 @@ func shutdownAll() {
 			default:
 			}
 			fmt.Println(mp.name, "Sending SIGTERM")
-			// Signal the whole process group (negative PID) so it reaches the
-			// service process even when it's a child of the "sh -c" shell.
-			_ = syscall.Kill(-mp.cmd.Process.Pid, syscall.SIGTERM)
+			killTree(mp.cmd.Process.Pid, syscall.SIGTERM)
 		}
 
 		var wg sync.WaitGroup
@@ -162,12 +164,74 @@ func shutdownAll() {
 				case <-mp.done:
 				case <-time.After(gracePeriod):
 					fmt.Println(mp.name, "Did not stop in time; sending SIGKILL")
-					_ = syscall.Kill(-mp.cmd.Process.Pid, syscall.SIGKILL)
+					killTree(mp.cmd.Process.Pid, syscall.SIGKILL)
 				}
 			}(mp)
 		}
 		wg.Wait()
 	})
+}
+
+// killTree signals rootPid and every one of its descendants (recursively), as found
+// in /proc at the time of the call. Descendants are found via each process's PPid in
+// /proc/<pid>/stat, which stays accurate even for processes that called setsid() to
+// detach into their own session/process group (e.g. php-fpm), so signaling by pgid
+// alone would miss them.
+func killTree(rootPid int, sig syscall.Signal) {
+	for _, pid := range processTree(rootPid) {
+		_ = syscall.Kill(pid, sig)
+	}
+}
+
+// processTree returns rootPid and all of its descendants, found by scanning /proc.
+func processTree(rootPid int) []int {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return []int{rootPid}
+	}
+
+	childrenByParent := make(map[int][]int)
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		ppid, err := readPPID(pid)
+		if err != nil {
+			continue
+		}
+		childrenByParent[ppid] = append(childrenByParent[ppid], pid)
+	}
+
+	var result []int
+	queue := []int{rootPid}
+	for len(queue) > 0 {
+		pid := queue[0]
+		queue = queue[1:]
+		result = append(result, pid)
+		queue = append(queue, childrenByParent[pid]...)
+	}
+	return result
+}
+
+// readPPID reads the parent PID of pid from /proc/<pid>/stat. The comm field (2nd
+// field) is wrapped in parens and may itself contain spaces/parens, so the fields
+// are located from the last ")" rather than by naive whitespace splitting.
+func readPPID(pid int) (int, error) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, err
+	}
+	afterComm := strings.LastIndex(string(data), ")")
+	if afterComm < 0 {
+		return 0, fmt.Errorf("unexpected /proc/%d/stat format", pid)
+	}
+	fields := strings.Fields(string(data)[afterComm+1:])
+	// fields[0] is state, fields[1] is ppid.
+	if len(fields) < 2 {
+		return 0, fmt.Errorf("unexpected /proc/%d/stat format", pid)
+	}
+	return strconv.Atoi(fields[1])
 }
 
 func setExitCode(code int) {
