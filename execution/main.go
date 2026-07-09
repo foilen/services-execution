@@ -65,8 +65,19 @@ func main() {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		cmd.Dir = service.WorkingDirectory
+		uid := uint32(os.Getuid())
+		if service.UserID != nil {
+			uid = *service.UserID
+		}
+		gid := uint32(os.Getgid())
+		if service.GroupID != nil {
+			gid = *service.GroupID
+		}
+
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
-		cmd.SysProcAttr.Credential = &syscall.Credential{Uid: service.UserID, Gid: service.GroupID}
+		// NoSetGroups avoids the setgroups() syscall, which requires CAP_SETGID
+		// unconditionally on Linux even when Uid/Gid match the calling process.
+		cmd.SysProcAttr.Credential = &syscall.Credential{Uid: uid, Gid: gid, NoSetGroups: true}
 		err := cmd.Start()
 		if err != nil {
 			fmt.Println(i, "Problem to start", err)

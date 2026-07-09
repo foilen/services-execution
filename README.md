@@ -75,3 +75,5 @@ Content of config.json:
 ```
 
 With this example, all the apps will stop in 10 seconds.
+
+`userID` and `groupID` are optional. If omitted, the service is run with the same user/group as the `services-execution` process itself.

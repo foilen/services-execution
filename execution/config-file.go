@@ -12,8 +12,11 @@ type RootConfiguration struct {
 
 // ServiceConfiguration is the definition of one service
 type ServiceConfiguration struct {
-	UserID           uint32
-	GroupID          uint32
+	// UserID and GroupID are pointers so a missing value in the config can be
+	// distinguished from an explicit 0 (root); when absent, the current
+	// process's own uid/gid is used instead.
+	UserID           *uint32
+	GroupID          *uint32
 	WorkingDirectory string
 	Command          string
 }
