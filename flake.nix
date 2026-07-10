@@ -14,6 +14,7 @@
       {
         packages.default = pkgs.buildGoModule {
           pname = "services-execution";
+          version = "0.0.0";
 
           src = ./.;
 
